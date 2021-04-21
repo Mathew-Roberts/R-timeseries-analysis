@@ -1,0 +1,122 @@
+---
+title: "Forecasting Air Passengers"
+author: "Mathew Roberts"
+date: "15/04/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Air Passenger Forecast
+
+The following code aims to provide the optimal forecast for the number of air passengers in the 12 months proceeding the year 1961. We will be using the SARIMA model operating in the Box-Jenkins framework, where we will be assuming that the data is weakly stationary.
+
+### Preprocessing
+
+Before we begin fitting the model, we must ensure that our starting data has a homogeneous variance. From the plot below, we can see that the variance increases with time, therefore we must apply a log-transform to the data to stabilise the variance.
+
+```{r preprocess}
+library(astsa)
+AP <- AirPassengers
+plot(AP, xlab = "Year", ylab ="Number of Air Passengers", main = "Air Passengers from 1949 - 1961")
+```
+
+We now apply a log-transform and re-plot the data.
+
+```{r preprocess 1}
+lAP <- log(AP)
+plot(lAP, xlab = "Year", ylab ="Log - Number of Air Passengers", main = "Log - Air Passengers from 1949 - 1961")
+```
+
+We note that the above plot now has a homogeneous variance, so now we can begin to apply the de-trending and de-seasonality operators.
+
+### Constructing the Model
+
+The additive model is given by, $X_t = m_t + S_t + Y_t$, where $m_t$, $S_t$ and $Y_t$ are the trend, seasonality and noise factors respectively.
+
+The differencing operations seek to remove the trend and seasonality such that we can focus on modelling the noise, $Y_t$.
+
+```{r de trend}
+dlAP = diff(lAP)
+plot(dlAP, xlab = "Year", ylab = "De-trended data", main ="Differenced Air Passenger Data")
+```
+
+In the above code we de-trend the data using the differencing operator, however we can still see the seasonality in the data. We must now apply seasonal differencing to this detrended data. But first we must accurately determine the seasonality of the data. This can be done by assessing the frequency of the data in a "Perirodogram" using the $mvspec()$ function.
+
+```{r seasonality }
+cycle = mvspec(AP, log = "no", main = "Perirodogram")
+```
+
+We can see that there is a large spike at frequency equal to 1. Since the data is monthly, each integer frequency represents a time period of 12 months, therefore our seasonality is 12.
+
+We now apply seasonal differencing to the de-trended data, and visually inspect the noise.
+
+```{r seasonality 1 }
+sdlAP = diff(dlAP, 12)
+
+plot(sdlAP, xlab = "Year", ylab = "Noise", main = "De-trended and De-seasonalised Data")
+```
+
+We can see that the data fluctuates around the value 0, with little evidence of structure or seasonality within the data. At a glance, this data looks weakly stationary.
+
+### Testing for Weakly Stationarity
+
+We must justify the assertion that this data is weakly stationary by applying tests. These tests are the Augmented Dickey Fuller (ADF) test, and the KPSS test. We seek to reject the ADF test at significance level $\alpha = 0.5$, and fail to reject the KPSS at the same significance. If both tests are passed we can be confident at 95\%, that the de-trended and de-seasonalised data is weakly stationary.
+
+```{r adf kpss, include=FALSE}
+library(tseries)
+library(fpp3)
+```
+
+```{r adf kpss 1}
+#We reject adf test - p value smaller than 0.05
+adf.test(sdlAP)
+#We do not reject the kpss test - the p value is greater than significance level 0.05
+unitroot_kpss((sdlAP))
+```
+
+We reject the ADF test as the registered p-value is below $\alpha$, and we do not reject the KPSS test as the p-value is greater than $\alpha$. Thus we conclude that the data is weakly stationary at a 95\% confidence level.
+
+### Identifying the Parameters of the SARIMA Model 
+
+From the previous tests, we are confident that the de-trended and de-seasonalised data is weakly stationary. We now plot the ACF and PACF, which allow us to estimate the parameters of the SARIMA model.
+
+```{r acf}
+acf2(sdlAP, max.lag = 100, main = "Correlation Functions for the de-trended/de-seasonalised Air Passenger data")
+```
+
+The above plots incorporate both seasonal and non-seasonal AR, MA and ARMA models on the same plot. The non-seasonal characteristics are embedded between lag-0 and lag-1, whilst the seasonal characteristics can be determined after lag-1. This is for both ACF and PACF.
+
+For the non-seasonal section of the plots, both the ACF and PACF appear to exponentially decay to 0 as the lag increases to 1. This is indicative of an ARMA(1,1) model for the non-seasonal aspect of the SARIMA model. 
+
+For the seasonal section of the plots, we must look at the behaviour of the graph for each integer lag as each integer represents the full season of 12 months. Through a close inspection, I estimate that the ACF cuts off after lag-1, and the PACF exponentially decays after lag-1 - this observation is hard to see but this has been based on the fact that the difference in size between the spike in the ACF at lag-1 and the following spike is much greater than the equivalent size difference in the PACF plot. Adhering to this model, I suggest that this is characteristic of an SMA(1) model.
+
+### Testing the Model
+
+We are now in position to perform diagnostic tests on our SARIMA model. To reiterate, our full SARIMA model includes the initial trend/seasonal differencing as well as the ARMA(1,1) and SMA(1) model inferred from the ACF/PACF plots.
+
+```{r sarima}
+model = sarima(lAP, 1,1,1,0,1,1,12)
+```
+
+The standardised residuals look like an uncorrelated sequence, there are regular oscillations around 0 with not too many spikes. The mean is almost 0 at 0.0529 which is expected for a white noise sequence. The ACF of the residuals also lie within the blue significance lines, which further suggests that the residuals are an i.i.d sequence. The majority of the data points in the Normalised Q-Q plot also lie close to or on the blue line as would be expected of an uncorellated sequence. 
+
+The last plot showing the p-values for the Ljung-Box statistic also show that for each lag, the p-value is greater than the significance level of $\alpha$. The null hypothesis of this statistic states that the residuals are independent, and since the p-value's are greater than the significance level, then we do not reject this null hypothesis.
+
+We include one final test, the Ljung-Box Q test statistic, which is an aggregated version of the above Ljung-Box statistic. It considers all lags and considers the null hypothesis that the data is independently distributed.
+
+```{r diag}
+Box.test(resid(model$fit), lag = 50, type = "Ljung-Box", fitdf = 3)
+```
+
+### Forecast 
+
+The model has a satisfactory performance when subject to the above diagnostic tests, therefore I will now use it to forecast 12 months into the future. The lighter grey lines, show the prediction with a variation of 2$\sigma$ whereas the darker grey lines, show the prediction with a variation of $\sigma$
+
+```{r forecast}
+sarima.for(AP, 12, 1,1,1,0,1,1,12)
+```
+
+The forecast appears to be visually consistent with the past data. The seasonality is present and whilst also showing the increasing varinace of the Air Passengers as time progresses.
